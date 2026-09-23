@@ -5,6 +5,8 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { WakeupEvent } from "@opencode-ai/schema/kilocode/wakeup-event"
 import { Context, Effect, Fiber, Layer, Semaphore } from "effect"
+import { SessionStatus } from "@/session/status"
+import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
 import { fireLayer, text as wakeupText } from "./resume"
 import * as scheduled from "@/kilocode/session/scheduled"
 import * as schema from "./schema"
@@ -104,23 +106,25 @@ export namespace Wakeup {
       const readCron = (target: string[]) =>
         storage.read<CronInfo>(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
 
-      // Mirror a session's earliest pending wake into the process-global status
-      // registry so SessionStatus reports `scheduled`, and clear it when none
-      // remain (fired, cancelled, or the last wake passed).
-      const sync = (sessionID: SessionID, held: Info[]) => {
-        const next = held[0]
-        if (next) scheduled.set(sessionID, next.dueAt, next.directory)
-        else scheduled.clear(sessionID)
-      }
-
       // Tell clients how many wakeups a session still holds, so Keep Awake stays
-      // active while one is pending. Best effort: a publish failure must not
-      // fail the scheduling operation.
+      // active while one is pending, and mirror the earliest future wake into the
+      // process-global status registry so SessionStatus reports `scheduled`.
+      // A running turn keeps `busy`: the end-of-turn idle publish then surfaces
+      // the wake. Best effort: a publish failure must not fail the operation.
       const announce = (sessionID: SessionID) =>
         Effect.gen(function* () {
-          const held = yield* list({ sessionID })
-          sync(sessionID, held)
-          yield* events.publish(WakeupEvent.Pending, { sessionID, pending: held.length })
+          const items = yield* list({ sessionID })
+          yield* events.publish(WakeupEvent.Pending, { sessionID, pending: items.length })
+          const next = items.find((info) => info.dueAt > Date.now())
+          if (next) scheduled.set(sessionID, next.dueAt, next.directory)
+          else scheduled.clear(sessionID)
+          if (!SessionStatus.busy(sessionID)) {
+            const entry = scheduled.get(sessionID)
+            yield* events.publish(SessionStatusEvent.Status, {
+              sessionID,
+              status: entry ? scheduled.info(entry) : { type: "idle" as const },
+            })
+          }
         }).pipe(Effect.catchCause((cause) => Effect.logWarning("wakeup notify failed", { sessionID, cause })))
 
       const lookup = Effect.fnUntraced(function* (id: ID) {

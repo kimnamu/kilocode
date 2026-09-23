@@ -111,6 +111,11 @@ const wakeEvents = (events: Published[]) =>
     .filter((event) => event.type === "session.wakeup")
     .map((event) => event.data as { sessionID: string; pending: number })
 
+const statusEvents = (events: Published[]) =>
+  events
+    .filter((event) => event.type === "session.status")
+    .map((event) => event.data as { sessionID: string; status: unknown })
+
 function info(over: Partial<Wakeup.Info> = {}): Wakeup.Info {
   const now = Date.now()
   return {
@@ -159,14 +164,22 @@ describe("Wakeup", () => {
   it.effect("mirrors a pending wake into the scheduled status registry", () =>
     Effect.gen(function* () {
       const wake = yield* Wakeup.Service
+      const recorder = yield* Recorder
       const dir = (yield* TestDir).dir
       const sessionID = session()
+      scheduled.clear(sessionID)
 
       const info = yield* wake.schedule({ sessionID, directory: dir, prompt: "later", delay: "1m" })
       expect(scheduled.get(sessionID)).toEqual({ dueAt: info.dueAt, directory: dir })
+      // The status publish lets event clients see the transition without reading
+      // the registry, and carries the wake instant the companion item shows.
+      expect(statusEvents(recorder.events)).toEqual([
+        { sessionID, status: { type: "scheduled", scheduledAt: new Date(info.dueAt).toISOString() } },
+      ])
 
       yield* wake.cancel(info.id)
       expect(scheduled.get(sessionID)).toBeUndefined()
+      expect(statusEvents(recorder.events).at(-1)).toEqual({ sessionID, status: { type: "idle" } })
     }),
   )
 
@@ -521,13 +534,16 @@ describe("Wakeup", () => {
         const wake = yield* Wakeup.Service
         const recorder = yield* Recorder
         const dir = (yield* TestDir).dir
+        const sessionID = session()
+        scheduled.clear(sessionID)
 
         yield* wake.schedule({
-          sessionID: session(),
+          sessionID,
           directory: dir,
           prompt: "poll the deploy",
           when: new Date(Date.now() + 1200).toISOString(),
         })
+        expect(scheduled.get(sessionID)).toBeDefined()
 
         const fired = yield* pollWithTimeout(
           Effect.sync(() => recorder.calls[0]),
@@ -537,6 +553,10 @@ describe("Wakeup", () => {
         expect(fired.prompt).toBe("poll the deploy")
         // A timer fire re-resolves the instance through provide, not in place.
         expect(recorder.modes[0]).toEqual({ inPlace: false })
+        // The fire drops the wake before the resume, so the registry clears and
+        // an idle status is published before the turn sets busy.
+        expect(scheduled.get(sessionID)).toBeUndefined()
+        expect(statusEvents(recorder.events).at(-1)).toEqual({ sessionID, status: { type: "idle" } })
       }),
     20_000,
   )
