@@ -25,6 +25,7 @@ import { ProjectV2 } from "@opencode-ai/core/project"
 import { Session } from "../../src/session/session"
 import { SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
+import * as scheduledRegistry from "../../src/kilocode/session/scheduled"
 import { QuestionID } from "../../src/question/schema"
 import { TestConfig } from "../fixture/config"
 import { testEffect } from "../lib/effect"
@@ -1195,6 +1196,94 @@ describe("KiloSessions heartbeat attention status (DEF-3)", () => {
     })
   }, 30000)
 
+  // The wake path the product actually takes: the wakeup service mirrors a
+  // pending wake into the process-global registry, and no turn runs, so the
+  // project SessionStatus store has no row for the session. The heartbeat must
+  // still advertise `scheduled` with the wake instant.
+  test("reports scheduled with the wake instant for a pending wake", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await provide({
+      directory: tmp.path,
+      fn: async () => {
+        await KiloSessions.enableRemote()
+        const id = await setupSession()
+        await KiloSessions.attachRemoteSession(id)
+
+        const dueAt = Date.now() + 60 * 60 * 1000
+        scheduledRegistry.set(id, dueAt, tmp.path)
+        try {
+          const payload = await capturedGetSessions()()
+          const row = payload.sessions.find((s) => s.id === id)
+          expect(row?.status).toBe("scheduled")
+          expect(row?.scheduledAt).toBe(new Date(dueAt).toISOString())
+        } finally {
+          scheduledRegistry.clear(id)
+        }
+      },
+    })
+  }, 30000)
+
+  test("a cancelled wake re-syncs idle without scheduledAt", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await provide({
+      directory: tmp.path,
+      fn: async () => {
+        await KiloSessions.enableRemote()
+        const id = await setupSession()
+        await KiloSessions.attachRemoteSession(id)
+
+        const dueAt = Date.now() + 60 * 60 * 1000
+        scheduledRegistry.set(id, dueAt, tmp.path)
+        scheduledRegistry.clear(id)
+
+        const payload = await capturedGetSessions()()
+        const row = payload.sessions.find((s) => s.id === id)
+        expect(row?.status).toBe("idle")
+        expect(row?.scheduledAt).toBeUndefined()
+      },
+    })
+  }, 30000)
+
+  test("a running session stays busy while a wake is pending", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await provide({
+      directory: tmp.path,
+      fn: async () => {
+        await KiloSessions.enableRemote()
+        const id = await setupSession()
+        await KiloSessions.attachRemoteSession(id)
+
+        const dueAt = Date.now() + 60 * 60 * 1000
+        scheduledRegistry.set(id, dueAt, tmp.path)
+        try {
+          const { AppRuntime } = await import("@/effect/app-runtime")
+          await AppRuntime.runPromise(SessionStatus.Service.use((svc) => svc.set(id, { type: "busy" })))
+
+          const payload = await capturedGetSessions()()
+          const row = payload.sessions.find((s) => s.id === id)
+          expect(row?.status).toBe("busy")
+          expect(row?.scheduledAt).toBeUndefined()
+        } finally {
+          scheduledRegistry.clear(id)
+        }
+      },
+    })
+  }, 30000)
+
+  test("a session with no status is absent from the heartbeat", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await provide({
+      directory: tmp.path,
+      fn: async () => {
+        await KiloSessions.enableRemote()
+        const id = await setupSession()
+
+        const payload = await capturedGetSessions()()
+        expect(payload.sessions.some((s) => s.id === id)).toBe(false)
+      },
+    })
+  }, 30000)
+
   test("Permission and Question list() are called once per heartbeat across many sessions", async () => {
     await using tmp = await tmpdir({ git: true })
     await provide({
@@ -2205,4 +2294,29 @@ describe("KiloSessions PR poll wiring", () => {
       },
     })
   }, 30000)
+})
+
+// Shared attention/status mapping used by both the ingest sender and the relay
+// heartbeat. Exported at module scope so these cases exercise the exact wire
+// mapping without booting an instance.
+describe("resolveDerivedSessionStatus", () => {
+  const resolve = KiloSessions.resolveDerivedSessionStatus
+
+  test("maps a future wake to scheduled", () => {
+    expect(resolve({ hasPermission: false, hasQuestion: false, statusType: "scheduled" })).toBe("scheduled")
+  })
+
+  test("permission and question take precedence over scheduled", () => {
+    expect(resolve({ hasPermission: true, hasQuestion: false, statusType: "scheduled" })).toBe("permission")
+    expect(resolve({ hasPermission: false, hasQuestion: true, statusType: "scheduled" })).toBe("question")
+  })
+
+  test("a running session stays busy over a scheduled entry", () => {
+    expect(resolve({ hasPermission: false, hasQuestion: false, statusType: "busy" })).toBe("busy")
+  })
+
+  test("offline still maps to retry and a missing status to idle", () => {
+    expect(resolve({ hasPermission: false, hasQuestion: false, statusType: "offline" })).toBe("retry")
+    expect(resolve({ hasPermission: false, hasQuestion: false, statusType: undefined })).toBe("idle")
+  })
 })

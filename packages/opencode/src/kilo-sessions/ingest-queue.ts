@@ -50,7 +50,7 @@ export namespace IngestQueue {
       }
     | {
         type: "session_status"
-        data: { status: "idle" | "busy" | "question" | "permission" | "retry" }
+        data: { status: "idle" | "busy" | "question" | "permission" | "retry" | "scheduled"; scheduledAt?: string }
       }
     | {
         type: "session_pr_link"

@@ -627,4 +627,36 @@ describe("RemoteProtocol", () => {
       })
     }
   })
+
+  // kilocode_change - scheduled: the wake instant rides the session row.
+
+  test("heartbeat round-trips a scheduled session with scheduledAt", () => {
+    const msg = {
+      type: "heartbeat",
+      sessions: [{ id: "s1", status: "scheduled", title: "t", scheduledAt: "2026-09-24T09:00:00.000Z" }],
+    }
+    const result = RemoteProtocol.Heartbeat.safeParse(msg)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.sessions[0].status).toBe("scheduled")
+      expect(result.data.sessions[0].scheduledAt).toBe("2026-09-24T09:00:00.000Z")
+    }
+    // round-trip via JSON
+    const json = JSON.parse(JSON.stringify(msg))
+    const result2 = RemoteProtocol.Heartbeat.safeParse(json)
+    expect(result2.success).toBe(true)
+    if (result2.success) {
+      expect(result2.data.sessions[0].status).toBe("scheduled")
+      expect(result2.data.sessions[0].scheduledAt).toBe("2026-09-24T09:00:00.000Z")
+    }
+  })
+
+  test("session info scheduledAt optional (legacy and other statuses)", () => {
+    const msg = { type: "heartbeat", sessions: [{ id: "s1", status: "busy", title: "t" }] }
+    const result = RemoteProtocol.Heartbeat.safeParse(msg)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.sessions[0].scheduledAt).toBeUndefined()
+    }
+  })
 })

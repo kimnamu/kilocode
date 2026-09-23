@@ -6,6 +6,10 @@ export namespace RemoteProtocol {
   export const SessionInfo = z.object({
     id: z.string(),
     status: z.string(),
+    // kilocode_change - scheduled: ISO-8601 instant of the pending wake. Present
+    // only with `status: "scheduled"`. Optional so the other statuses and legacy
+    // CLIs (no field) remain wire-compatible.
+    scheduledAt: z.string().optional(),
     title: z.string(),
     parentSessionId: z.string().optional(),
     gitUrl: z.string().optional(),

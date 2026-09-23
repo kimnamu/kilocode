@@ -43,6 +43,7 @@ import {
 } from "@/kilo-sessions/rename-adoptions"
 import { KiloSessionTitle } from "@/kilocode/session/title"
 import { SessionStatus } from "@/session/status"
+import * as scheduled from "@/kilocode/session/scheduled"
 import { Telemetry } from "@kilocode/kilo-telemetry"
 import { Question } from "@/question"
 import { Permission } from "@/permission"
@@ -404,47 +405,45 @@ export namespace KiloSessions {
   const statusSyncs = new Map<string, { running: boolean; dirty: boolean }>()
   const STATUS_TIMEOUT_MS = 3_000
 
-  // Shared attention/status resolution for ingest sync and the remote heartbeat.
-  // Precedence: permission > question > SessionStatus (offline maps to retry).
-  type DerivedSessionStatus = "idle" | "busy" | "question" | "permission" | "retry"
+  // Status plus the wake instant when the session sleeps. `scheduledAt` is only
+  // ever set alongside the `scheduled` status.
+  type DerivedStatus = { status: DerivedSessionStatus; scheduledAt?: string }
 
-  function resolveDerivedSessionStatus(input: {
-    hasPermission: boolean
-    hasQuestion: boolean
-    statusType: SessionStatus.Info["type"] | undefined
-  }): DerivedSessionStatus {
-    if (input.hasPermission) return "permission"
-    if (input.hasQuestion) return "question"
-    if (input.statusType === "offline") return "retry"
-    if (input.statusType === "busy" || input.statusType === "retry" || input.statusType === "idle") {
-      return input.statusType
+  // Build the ingest `session_status` payload. `scheduledAt` rides only with the
+  // `scheduled` status, exactly as the relay heartbeat advertises it.
+  function statusData(derived: DerivedStatus): { status: DerivedSessionStatus; scheduledAt?: string } {
+    if (derived.status === "scheduled" && derived.scheduledAt) {
+      return { status: derived.status, scheduledAt: derived.scheduledAt }
     }
-    return "idle"
+    return { status: derived.status }
   }
 
-  async function deriveStatus(sessionID: string): Promise<DerivedSessionStatus> {
+  async function deriveStatus(sessionID: string): Promise<DerivedStatus> {
     const { AppRuntime } = await import("@/effect/app-runtime")
     const permissions = (await AppRuntime.runPromise(Permission.Service.use((svc) => svc.list()))).filter(
       (p) => p.sessionID === sessionID,
     )
-    if (permissions.length > 0) return "permission"
+    if (permissions.length > 0) return { status: "permission" }
 
     const questions = (await AppRuntime.runPromise(Question.Service.use((svc) => svc.list()))).filter(
       (q) => q.sessionID === sessionID,
     )
-    if (questions.length > 0) return "question"
+    if (questions.length > 0) return { status: "question" }
 
     const status = await AppRuntime.runPromise(SessionStatus.Service.use((svc) => svc.get(SessionID.make(sessionID))))
-    return resolveDerivedSessionStatus({
-      hasPermission: false,
-      hasQuestion: false,
-      statusType: status.type,
-    })
+    return {
+      status: resolveDerivedSessionStatus({
+        hasPermission: false,
+        hasQuestion: false,
+        statusType: status.type,
+      }),
+      scheduledAt: status.type === "scheduled" ? status.scheduledAt : undefined,
+    }
   }
 
   async function deriveAndSyncStatus(sessionID: string) {
-    const status = await withTimeout(deriveStatus(sessionID), STATUS_TIMEOUT_MS)
-    await ingest.sync(sessionID, [{ type: "session_status", data: { status } }])
+    const derived = await withTimeout(deriveStatus(sessionID), STATUS_TIMEOUT_MS)
+    await ingest.sync(sessionID, [{ type: "session_status", data: statusData(derived) }])
   }
 
   // kilocode_change - PR link advertise (plan 8.2/8.4): resolve the worktree PR
@@ -501,6 +500,40 @@ export namespace KiloSessions {
     return AppRuntime.runPromise(
       Storage.Service.use((storage) => cumulativeSessionDiff(storage, SessionID.make(sessionId), local)),
     )
+  }
+
+  // Shared attention/status resolution for ingest sync and the remote heartbeat.
+  // Precedence: permission > question > SessionStatus (offline maps to retry).
+  // Exported (module scope) so tests can exercise the exact mapping the wire uses.
+  export type DerivedSessionStatus = "idle" | "busy" | "question" | "permission" | "retry" | "scheduled"
+
+  export function resolveDerivedSessionStatus(input: {
+    hasPermission: boolean
+    hasQuestion: boolean
+    statusType: SessionStatus.Info["type"] | undefined
+  }): DerivedSessionStatus {
+    if (input.hasPermission) return "permission"
+    if (input.hasQuestion) return "question"
+    if (input.statusType === "offline") return "retry"
+    if (
+      input.statusType === "busy" ||
+      input.statusType === "retry" ||
+      input.statusType === "idle" ||
+      input.statusType === "scheduled"
+    ) {
+      return input.statusType
+    }
+    return "idle"
+  }
+
+  // The heartbeat reads the project-scoped status store, which holds no row for a
+  // session whose only status is a pending wake: no turn ran to write one, and
+  // the wakeup service mirrors the wake into the process-global registry only.
+  // Fall back to that registry so the relay still advertises `scheduled` with
+  // the wake instant, mirroring SessionStatus.get's own fallback.
+  function registryStatus(id: string): SessionStatus.Info | undefined {
+    const entry = scheduled.get(SessionID.make(id))
+    return entry ? scheduled.info(entry) : undefined
   }
 
   export const layer = Layer.effect(
@@ -894,21 +927,29 @@ export namespace KiloSessions {
             Effect.all(
               [...ids].map((id) =>
                 svc.get(SessionID.make(id)).pipe(
-                Effect.map((session) => ({
-                  id,
-                  directory: session.directory,
-                  status: resolveDerivedSessionStatus({
-                      hasPermission: permissionSessions.has(id),
-                      hasQuestion: questionSessions.has(id),
-                      statusType: statuses[id]?.type,
-                    }),
-                    title: session.title,
-                    parentSessionId: session.parentID,
-                    // kilocode_change - K1 W1: per-session platform, mirrors
-                    // meta()'s resolution order so the live value always agrees
-                    // with the session's stored created_on_platform.
-                    platform: KiloSession.resolvePlatform(id) || process.env["KILO_PLATFORM"] || "cli",
-                  })),
+                  Effect.map((session) => {
+                    // A pending wake has no store row, so fall back to the wake
+                    // registry before deriving the status.
+                    const entry = statuses[id] ?? registryStatus(id)
+                    return {
+                      id,
+                      directory: session.directory,
+                      status: resolveDerivedSessionStatus({
+                        hasPermission: permissionSessions.has(id),
+                        hasQuestion: questionSessions.has(id),
+                        statusType: entry?.type,
+                      }),
+                      // kilocode_change - scheduled: the pending wake instant rides
+                      // the scheduled status only, from the same batched status map.
+                      scheduledAt: entry?.type === "scheduled" ? entry.scheduledAt : undefined,
+                      title: session.title,
+                      parentSessionId: session.parentID,
+                      // kilocode_change - K1 W1: per-session platform, mirrors
+                      // meta()'s resolution order so the live value always agrees
+                      // with the session's stored created_on_platform.
+                      platform: KiloSession.resolvePlatform(id) || process.env["KILO_PLATFORM"] || "cli",
+                    }
+                  }),
                   Effect.orElseSucceed(() => undefined),
                 ),
               ),
@@ -930,14 +971,17 @@ export namespace KiloSessions {
             gitPairs.set(directory, { gitUrl, gitBranch: sessionGitBranch })
           }),
         )
-        const sessions = results.filter((r): r is NonNullable<typeof r> => !!r).map((r) => ({
-          id: r.id,
-          status: r.status,
-          title: r.title,
-          parentSessionId: r.parentSessionId,
-          ...gitPairs.get(r.directory ?? Instance.worktree),
-          platform: r.platform,
-        }))
+        const sessions = results
+          .filter((r): r is NonNullable<typeof r> => !!r)
+          .map((r) => ({
+            id: r.id,
+            status: r.status,
+            ...(r.status === "scheduled" && r.scheduledAt ? { scheduledAt: r.scheduledAt } : {}),
+            title: r.title,
+            parentSessionId: r.parentSessionId,
+            ...gitPairs.get(r.directory ?? Instance.worktree),
+            platform: r.platform,
+          }))
         // kilocode_change - PR link advertise (plan 8.2): resolve once
         // (worktree-scoped) and attach to every advertised row, then ingest the
         // triple per session (deduped by last-sent triple).
@@ -1597,7 +1641,7 @@ export namespace KiloSessions {
       },
       {
         type: "session_status",
-        data: { status: await deriveStatus(sessionId) },
+        data: statusData(await deriveStatus(sessionId)),
       },
     ])
     await syncPrLinkForSession(sessionId)
