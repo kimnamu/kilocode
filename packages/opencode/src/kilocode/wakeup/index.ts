@@ -6,6 +6,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { WakeupEvent } from "@opencode-ai/schema/kilocode/wakeup-event"
 import { Context, Effect, Fiber, Layer, Semaphore } from "effect"
 import { fireLayer, text as wakeupText } from "./resume"
+import * as scheduled from "@/kilocode/session/scheduled"
 import * as schema from "./schema"
 
 export namespace Wakeup {
@@ -103,13 +104,23 @@ export namespace Wakeup {
       const readCron = (target: string[]) =>
         storage.read<CronInfo>(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
 
+      // Mirror a session's earliest pending wake into the process-global status
+      // registry so SessionStatus reports `scheduled`, and clear it when none
+      // remain (fired, cancelled, or the last wake passed).
+      const sync = (sessionID: SessionID, held: Info[]) => {
+        const next = held[0]
+        if (next) scheduled.set(sessionID, next.dueAt, next.directory)
+        else scheduled.clear(sessionID)
+      }
+
       // Tell clients how many wakeups a session still holds, so Keep Awake stays
       // active while one is pending. Best effort: a publish failure must not
       // fail the scheduling operation.
       const announce = (sessionID: SessionID) =>
         Effect.gen(function* () {
-          const count = yield* list({ sessionID }).pipe(Effect.map((items) => items.length))
-          yield* events.publish(WakeupEvent.Pending, { sessionID, pending: count })
+          const held = yield* list({ sessionID })
+          sync(sessionID, held)
+          yield* events.publish(WakeupEvent.Pending, { sessionID, pending: held.length })
         }).pipe(Effect.catchCause((cause) => Effect.logWarning("wakeup notify failed", { sessionID, cause })))
 
       const lookup = Effect.fnUntraced(function* (id: ID) {

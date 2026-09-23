@@ -5,6 +5,7 @@ import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatusEvent } from "@opencode-ai/schema/session-status-event"
+import * as scheduled from "@/kilocode/session/scheduled" // kilocode_change
 
 export const Info = SessionStatusEvent.Info
 export type Info = SessionStatusEvent.Info
@@ -38,6 +39,15 @@ const stores = new Map<string, Map<SessionID, Info>>()
 const byDirectory = new Map<string, Map<SessionID, string>>()
 // kilocode_change end
 
+// kilocode_change start - true when this session holds a non-idle status anywhere in
+// this process. InstanceState data is per-directory, so a turn running in a
+// sibling directory of the same project would otherwise be missed.
+export function busy(sessionID: SessionID): boolean {
+  for (const store of stores.values()) if (store.has(sessionID)) return true
+  return false
+}
+// kilocode_change end
+
 // kilocode_change start - project-scoped read for the remote heartbeat gather. Kept off
 // the upstream SessionStatus.Interface so the shared interface stays
 // upstream-identical.
@@ -69,11 +79,25 @@ export const layer = Layer.effect(
 
     const get = Effect.fn("SessionStatus.get")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
-      return data.get(sessionID) ?? { type: "idle" as const }
+      // kilocode_change start - a future scheduled wake is the fallback when no turn runs
+      const current = data.get(sessionID)
+      if (current) return current
+      if (busy(sessionID)) return { type: "idle" as const }
+      const entry = scheduled.get(sessionID)
+      return entry ? scheduled.info(entry) : { type: "idle" as const }
+      // kilocode_change end
     })
 
     const list = Effect.fn("SessionStatus.list")(function* () {
-      return new Map(yield* InstanceState.get(state))
+      // kilocode_change start - include future scheduled wakes for this directory
+      const data = new Map(yield* InstanceState.get(state))
+      const ctx = yield* InstanceState.context
+      for (const [id, entry] of scheduled.forDirectory(ctx.directory)) {
+        if (data.has(id) || busy(id)) continue
+        data.set(id, scheduled.info(entry))
+      }
+      return data
+      // kilocode_change end
     })
 
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
@@ -90,7 +114,9 @@ export const layer = Layer.effect(
         store?.delete(sessionID)
         if (store && store.size === 0) stores.delete(projectID)
         byDirectory.get(ctx.directory)?.delete(sessionID)
-        yield* events.publish(Event.Status, { sessionID, status })
+        // publish a pending future wake as scheduled instead of the idle status
+        const entry = scheduled.get(sessionID)
+        yield* events.publish(Event.Status, { sessionID, status: entry ? scheduled.info(entry) : status })
         yield* events.publish(Event.Idle, { sessionID })
         return
       }

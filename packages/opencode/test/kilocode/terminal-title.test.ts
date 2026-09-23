@@ -74,6 +74,18 @@ describe("KiloTerminalTitle", () => {
     ).toEqual({ title: "◔ Kilo CLI | Build status", id: "parent", active: true, indicator: "working" })
   })
 
+  test("session_scheduledSession_isNotWorking", () => {
+    expect(
+      KiloTerminalTitle.session({
+        base,
+        id: "parent",
+        data: data({ session_status: { parent: { type: "scheduled" } } }),
+        done: {},
+        icon: "unicode",
+      }),
+    ).toEqual({ title: "Kilo CLI | Build status", id: "parent", active: false, indicator: "none" })
+  })
+
   test("session_pendingPermission_overridesBusy", () => {
     expect(
       KiloTerminalTitle.session({

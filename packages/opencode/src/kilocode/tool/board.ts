@@ -60,7 +60,7 @@ const snapshot = Effect.fn("BoardTools.snapshot")(function* (
     sessions.set(job.id, { state: job.status, updated: job.started_at })
   }
   for (const [id, value] of yield* status.list()) {
-    if (value.type === "idle") continue
+    if (value.type === "idle" || value.type === "scheduled") continue
     sessions.set(id, { state: value.type, updated: sessions.get(id)?.updated })
   }
   return { observedAt: Date.now(), sessions } satisfies BoardStore.Snapshot

@@ -247,6 +247,17 @@ describe("SessionStatus.Info", () => {
     expect(decode(input)).toEqual(input)
   })
 
+  // kilocode_change start - the scheduled status variant
+  test("scheduled carries an ISO-8601 scheduledAt", () => {
+    const input = { type: "scheduled" as const, scheduledAt: "2026-09-24T09:00:00.000Z" }
+    expect(decode(input)).toEqual(input)
+  })
+
+  test("rejects scheduled without scheduledAt", () => {
+    expect(() => decode({ type: "scheduled" })).toThrow()
+  })
+  // kilocode_change end
+
   test("rejects unknown type", () => {
     expect(() => decode({ type: "bogus" })).toThrow()
   })

@@ -10,6 +10,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Git } from "@/git"
 import { Wakeup } from "@/kilocode/wakeup"
+import * as scheduled from "@/kilocode/session/scheduled"
 import { SessionID } from "@/session/schema"
 import { Storage } from "@/storage/storage"
 import { pollWithTimeout, testEffect } from "../../lib/effect"
@@ -152,6 +153,20 @@ describe("Wakeup", () => {
       expect(list[0]?.prompt).toBe("check the build")
       expect(list[0]?.dueAt).toBeGreaterThan(info.created)
       expect(wakeEvents(recorder.events)).toEqual([{ sessionID, pending: 1 }])
+    }),
+  )
+
+  it.effect("mirrors a pending wake into the scheduled status registry", () =>
+    Effect.gen(function* () {
+      const wake = yield* Wakeup.Service
+      const dir = (yield* TestDir).dir
+      const sessionID = session()
+
+      const info = yield* wake.schedule({ sessionID, directory: dir, prompt: "later", delay: "1m" })
+      expect(scheduled.get(sessionID)).toEqual({ dueAt: info.dueAt, directory: dir })
+
+      yield* wake.cancel(info.id)
+      expect(scheduled.get(sessionID)).toBeUndefined()
     }),
   )
 

@@ -7,13 +7,19 @@ import { InstanceRef } from "../../src/effect/instance-ref"
 import { disposeInstance } from "../../src/effect/instance-registry"
 import { SessionStatus } from "../../src/session/status"
 import { SessionID } from "../../src/session/schema"
+import * as scheduled from "../../src/kilocode/session/scheduled"
 import type { InstanceContext } from "../../src/project/instance-context"
 
-// SessionStatus only publishes through the bridge; a no-op publish is enough.
+// SessionStatus only publishes through the bridge; recording the calls is
+// enough to assert what the idle branch emits.
+const published: { type: string; data: unknown }[] = []
 const events = Layer.succeed(
   EventV2Bridge.Service,
   EventV2Bridge.Service.of({
-    publish: () => Effect.void,
+    publish: (definition: { type: string }, data: unknown) =>
+      Effect.sync(() => {
+        published.push({ type: definition.type, data })
+      }),
   } as unknown as EventV2.Interface),
 )
 
@@ -116,5 +122,122 @@ describe("SessionStatus", () => {
 
     const after = await runtime.runPromise(SessionStatus.listAll().pipe(provide("/tmp/dispose-b", "proj-dispose")))
     expect(after.get(id)).toBeUndefined()
+  })
+
+  test("a future wake reports scheduled from get and list in its own directory only", async () => {
+    const id = SessionID.make("ses_scheduled_future")
+    const dueAt = Date.now() + 60_000
+    const expected = { type: "scheduled" as const, scheduledAt: new Date(dueAt).toISOString() }
+    scheduled.set(id, dueAt, "/tmp/sched-a")
+
+    try {
+      const [one, listA, listB] = await runtime.runPromise(
+        Effect.gen(function* () {
+          const one = yield* SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj"))
+          const listA = yield* SessionStatus.Service.use((svc) => svc.list()).pipe(provide("/tmp/sched-a", "proj"))
+          const listB = yield* SessionStatus.Service.use((svc) => svc.list()).pipe(provide("/tmp/sched-b", "proj"))
+          return [one, listA, listB] as const
+        }),
+      )
+
+      expect(one).toEqual(expected)
+      expect(listA.get(id)).toEqual(expected)
+      expect(listB.get(id)).toBeUndefined()
+    } finally {
+      scheduled.clear(id)
+    }
+  })
+
+  test("a past wake is never reported as scheduled", async () => {
+    const id = SessionID.make("ses_scheduled_past")
+    scheduled.set(id, Date.now() - 1_000, "/tmp/sched-a")
+
+    const one = await runtime.runPromise(
+      SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj")),
+    )
+
+    expect(one).toEqual({ type: "idle" })
+    expect(scheduled.get(id)).toBeUndefined()
+  })
+
+  test("a turn running in the session's directory reports busy, not scheduled", async () => {
+    const id = SessionID.make("ses_scheduled_busy")
+    scheduled.set(id, Date.now() + 60_000, "/tmp/sched-a")
+
+    try {
+      const one = await runtime.runPromise(
+        Effect.gen(function* () {
+          yield* SessionStatus.Service.use((svc) => svc.set(id, { type: "busy" })).pipe(provide("/tmp/sched-a", "proj"))
+          return yield* SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj"))
+        }),
+      )
+
+      expect(one).toEqual({ type: "busy" })
+    } finally {
+      scheduled.clear(id)
+      await runtime.runPromise(
+        SessionStatus.Service.use((svc) => svc.set(id, { type: "idle" })).pipe(provide("/tmp/sched-a", "proj")),
+      )
+    }
+  })
+
+  test("a turn running in a sibling directory suppresses the scheduled status", async () => {
+    const id = SessionID.make("ses_scheduled_busy_sibling")
+    scheduled.set(id, Date.now() + 60_000, "/tmp/sched-a")
+
+    try {
+      const one = await runtime.runPromise(
+        Effect.gen(function* () {
+          yield* SessionStatus.Service.use((svc) => svc.set(id, { type: "busy" })).pipe(provide("/tmp/sched-b", "proj"))
+          return yield* SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj"))
+        }),
+      )
+
+      expect(one).toEqual({ type: "idle" })
+    } finally {
+      scheduled.clear(id)
+      await runtime.runPromise(
+        SessionStatus.Service.use((svc) => svc.set(id, { type: "idle" })).pipe(provide("/tmp/sched-b", "proj")),
+      )
+    }
+  })
+
+  test("going idle with a pending future wake publishes scheduled, not idle", async () => {
+    const id = SessionID.make("ses_scheduled_idle_set")
+    const dueAt = Date.now() + 60_000
+    const expected = { type: "scheduled" as const, scheduledAt: new Date(dueAt).toISOString() }
+    scheduled.set(id, dueAt, "/tmp/sched-a")
+    const before = published.length
+
+    try {
+      const one = await runtime.runPromise(
+        Effect.gen(function* () {
+          yield* SessionStatus.Service.use((svc) => svc.set(id, { type: "busy" })).pipe(provide("/tmp/sched-a", "proj"))
+          yield* SessionStatus.Service.use((svc) => svc.set(id, { type: "idle" })).pipe(provide("/tmp/sched-a", "proj"))
+          return yield* SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj"))
+        }),
+      )
+
+      expect(one).toEqual(expected)
+      const status = published
+        .slice(before)
+        .filter((event) => event.type === "session.status")
+        .at(-1)
+      expect(status?.data).toEqual({ sessionID: id, status: expected })
+    } finally {
+      scheduled.clear(id)
+    }
+  })
+
+  test("a cancelled wake reports idle again", async () => {
+    const id = SessionID.make("ses_scheduled_clear")
+    scheduled.set(id, Date.now() + 60_000, "/tmp/sched-a")
+    scheduled.clear(id)
+
+    const one = await runtime.runPromise(
+      SessionStatus.Service.use((svc) => svc.get(id)).pipe(provide("/tmp/sched-a", "proj")),
+    )
+
+    expect(one).toEqual({ type: "idle" })
   })
 })
