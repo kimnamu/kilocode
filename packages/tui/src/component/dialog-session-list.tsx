@@ -5,6 +5,7 @@ import { useSync } from "../context/sync"
 import { createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { Locale } from "../util/locale"
+import { scheduledWake } from "../util/session" // kilocode_change
 import { useProject } from "../context/project"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
@@ -248,11 +249,16 @@ export function DialogSessionList() {
       const status = sync.data.session_status?.[x.id]
       const isWorking = status?.type === "busy" || status?.type === "retry"
       const slot = slotByID.get(x.id)
+      // kilocode_change start - scheduled sessions show wake time, not a spinner
+      const wake = scheduledWake(status)
       const gutter = isWorking
         ? () => <Spinner />
-        : slot !== undefined
-          ? () => <text fg={theme.accent}>{slot}</text>
-          : undefined
+        : wake
+          ? () => <text fg={theme.accent}>{Locale.todayTimeOrDateTime(Date.parse(wake))}</text>
+          : slot !== undefined
+            ? () => <text fg={theme.accent}>{slot}</text>
+            : undefined
+      // kilocode_change end
       return {
         title: isDeleting ? `Press ${deleteHint()} again to confirm` : x.title,
         description: all && "worktreeName" in x && x.worktreeName ? `(${x.worktreeName})` : undefined, // kilocode_change
