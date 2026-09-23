@@ -3,6 +3,9 @@ import { Effect } from "effect"
 import { cmd } from "./cmd"
 import { effectCmd, fail } from "../effect-cmd"
 import { Session } from "@/session/session"
+import { SessionStatus } from "@/session/status" // kilocode_change
+import { Wakeup } from "@/kilocode/wakeup" // kilocode_change
+import { sessionStates, type SessionState } from "@/kilocode/cli/session-list" // kilocode_change
 import { SessionID } from "../../session/schema"
 import { UI } from "../ui"
 import { Locale } from "@/util/locale"
@@ -106,14 +109,20 @@ export const SessionListCommand = effectCmd({
     if (sessions.length === 0) return
 
     // kilocode_change start
+    const states = sessionStates({
+      sessions,
+      wakeups: yield* Wakeup.Service.use((svc) => svc.list()),
+      statuses: yield* SessionStatus.Service.use((svc) => svc.list()),
+    })
+
     const output =
       args.format === "json"
         ? args.all
-          ? formatGlobalSessionJSON(sessions as Session.GlobalInfo[])
-          : formatSessionJSON(sessions as Session.Info[])
+          ? formatGlobalSessionJSON(sessions as Session.GlobalInfo[], states)
+          : formatSessionJSON(sessions as Session.Info[], states)
         : args.all
-          ? formatGlobalSessionTable(sessions as Session.GlobalInfo[])
-          : formatSessionTable(sessions as Session.Info[])
+          ? formatGlobalSessionTable(sessions as Session.GlobalInfo[], states)
+          : formatSessionTable(sessions as Session.Info[], states)
     // kilocode_change end
 
     const shouldPaginate = process.stdout.isTTY && !args.maxCount && args.format === "table"
@@ -141,41 +150,70 @@ export const SessionListCommand = effectCmd({
   }),
 })
 
-function formatSessionTable(sessions: Session.Info[]): string {
+// kilocode_change start
+function stateOf(states: Map<string, SessionState>, id: string): SessionState {
+  return states.get(id) ?? { status: "idle" }
+}
+
+function formatSessionTable(sessions: Session.Info[], states: Map<string, SessionState>): string {
   const lines: string[] = []
 
   const maxIdWidth = Math.max(20, ...sessions.map((s) => s.id.length))
   const maxTitleWidth = Math.max(25, ...sessions.map((s) => s.title.length))
+  const maxUpdatedWidth = Math.max(
+    "Updated".length,
+    ...sessions.map((s) => Locale.todayTimeOrDateTime(s.time.updated).length),
+  )
+  const maxStatusWidth = Math.max("Status".length, ...sessions.map((s) => stateOf(states, s.id).status.length))
+  const maxScheduledWidth = Math.max(
+    "Scheduled At".length,
+    ...sessions.map((s) => (stateOf(states, s.id).scheduledAt ?? "").length),
+  )
 
-  const header = `Session ID${" ".repeat(maxIdWidth - 10)}  Title${" ".repeat(maxTitleWidth - 5)}  Updated`
+  const header =
+    `Session ID${" ".repeat(maxIdWidth - 10)}` +
+    `  Title${" ".repeat(maxTitleWidth - 5)}` +
+    `  Updated${" ".repeat(maxUpdatedWidth - 7)}` +
+    `  Status${" ".repeat(maxStatusWidth - 6)}` +
+    `  Scheduled At${" ".repeat(maxScheduledWidth - 12)}`
   lines.push(header)
   lines.push("─".repeat(header.length))
   for (const session of sessions) {
     const truncatedTitle = Locale.truncate(session.title, maxTitleWidth)
     const timeStr = Locale.todayTimeOrDateTime(session.time.updated)
-    const line = `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${timeStr}`
+    const state = stateOf(states, session.id)
+    const line =
+      `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${timeStr.padEnd(maxUpdatedWidth)}` +
+      `  ${state.status.padEnd(maxStatusWidth)}  ${(state.scheduledAt ?? "").padEnd(maxScheduledWidth)}`
     lines.push(line)
   }
 
   return lines.join(EOL)
 }
+// kilocode_change end
 
 // kilocode_change start
-function formatSessionJSON(sessions: Session.Info[]): string {
-  const jsonData = sessions.map((session) => ({
-    id: session.id,
-    title: session.title,
-    updated: session.time.updated,
-    created: session.time.created,
-    projectId: session.projectID,
-    directory: session.directory,
-  }))
+function formatSessionJSON(sessions: Session.Info[], states: Map<string, SessionState>): string {
+  const jsonData = sessions.map((session) => {
+    const state = stateOf(states, session.id)
+    return {
+      id: session.id,
+      title: session.title,
+      updated: session.time.updated,
+      created: session.time.created,
+      projectId: session.projectID,
+      directory: session.directory,
+      status: state.status,
+      // Only a scheduled row carries the wake time; never `undefined`/`null`.
+      ...(state.scheduledAt != null ? { scheduledAt: state.scheduledAt } : {}),
+    }
+  })
   return JSON.stringify(jsonData, null, 2)
 }
 // kilocode_change end
 
 // kilocode_change start
-function formatGlobalSessionTable(sessions: Session.GlobalInfo[]): string {
+function formatGlobalSessionTable(sessions: Session.GlobalInfo[], states: Map<string, SessionState>): string {
   const lines: string[] = []
 
   const maxIdWidth = Math.max(20, ...sessions.map((s) => s.id.length))
@@ -184,33 +222,57 @@ function formatGlobalSessionTable(sessions: Session.GlobalInfo[]): string {
     10,
     ...sessions.map((s) => (s.project?.name ?? s.project?.worktree ?? "unknown").length),
   )
+  const maxUpdatedWidth = Math.max(
+    "Updated".length,
+    ...sessions.map((s) => Locale.todayTimeOrDateTime(s.time.updated).length),
+  )
+  const maxStatusWidth = Math.max("Status".length, ...sessions.map((s) => stateOf(states, s.id).status.length))
+  const maxScheduledWidth = Math.max(
+    "Scheduled At".length,
+    ...sessions.map((s) => (stateOf(states, s.id).scheduledAt ?? "").length),
+  )
 
-  const header = `Session ID${" ".repeat(maxIdWidth - 10)}  Title${" ".repeat(maxTitleWidth - 5)}  Project${" ".repeat(maxProjectWidth - 7)}  Updated`
+  const header =
+    `Session ID${" ".repeat(maxIdWidth - 10)}` +
+    `  Title${" ".repeat(maxTitleWidth - 5)}` +
+    `  Project${" ".repeat(maxProjectWidth - 7)}` +
+    `  Updated${" ".repeat(maxUpdatedWidth - 7)}` +
+    `  Status${" ".repeat(maxStatusWidth - 6)}` +
+    `  Scheduled At${" ".repeat(maxScheduledWidth - 12)}`
   lines.push(header)
   lines.push("─".repeat(header.length))
   for (const session of sessions) {
     const truncatedTitle = Locale.truncate(session.title, maxTitleWidth)
     const project = Locale.truncate(session.project?.name ?? session.project?.worktree ?? "unknown", maxProjectWidth)
     const timeStr = Locale.todayTimeOrDateTime(session.time.updated)
-    const line = `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${project.padEnd(maxProjectWidth)}  ${timeStr}`
+    const state = stateOf(states, session.id)
+    const line =
+      `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${project.padEnd(maxProjectWidth)}` +
+      `  ${timeStr.padEnd(maxUpdatedWidth)}  ${state.status.padEnd(maxStatusWidth)}` +
+      `  ${(state.scheduledAt ?? "").padEnd(maxScheduledWidth)}`
     lines.push(line)
   }
 
   return lines.join(EOL)
 }
 
-function formatGlobalSessionJSON(sessions: Session.GlobalInfo[]): string {
-  const jsonData = sessions.map((session) => ({
-    id: session.id,
-    title: session.title,
-    updated: session.time.updated,
-    created: session.time.created,
-    projectId: session.projectID,
-    directory: session.directory,
-    project: session.project
-      ? { id: session.project.id, name: session.project.name, worktree: session.project.worktree }
-      : null,
-  }))
+function formatGlobalSessionJSON(sessions: Session.GlobalInfo[], states: Map<string, SessionState>): string {
+  const jsonData = sessions.map((session) => {
+    const state = stateOf(states, session.id)
+    return {
+      id: session.id,
+      title: session.title,
+      updated: session.time.updated,
+      created: session.time.created,
+      projectId: session.projectID,
+      directory: session.directory,
+      project: session.project
+        ? { id: session.project.id, name: session.project.name, worktree: session.project.worktree }
+        : null,
+      status: state.status,
+      ...(state.scheduledAt != null ? { scheduledAt: state.scheduledAt } : {}),
+    }
+  })
   return JSON.stringify(jsonData, null, 2)
 }
 // kilocode_change end
