@@ -186,6 +186,18 @@ describe("pending completion replay", () => {
     expect(connection.getPendingCompletions()).toEqual([])
   })
 
+  it("keeps a pending completion when the session schedules a wake", () => {
+    const connection = create()
+    const event = completion()
+    emit(connection, event)
+    emit(connection, {
+      id: "evt-002",
+      type: "session.status",
+      properties: { sessionID: "s1", status: { type: "scheduled", scheduledAt: "2026-09-24T00:00:00.000Z" } },
+    })
+    expect(connection.getPendingCompletions()).toEqual([event])
+  })
+
   it("keeps pending completions when untracked but discards them on service disposal", () => {
     const connection = create()
     const event = completion()

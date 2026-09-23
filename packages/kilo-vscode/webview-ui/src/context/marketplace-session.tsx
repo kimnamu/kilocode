@@ -1,6 +1,7 @@
 import { createContext, createSignal, onCleanup, useContext, type ParentComponent } from "solid-js"
 import { useVSCode } from "./vscode"
 import type { ExtensionMessage, SessionStatusInfo } from "../types/messages"
+import { statusInfo } from "../utils/session-activity"
 
 interface MarketplaceSessionContextValue {
   allStatusMap: () => Record<string, SessionStatusInfo>
@@ -17,12 +18,7 @@ export const MarketplaceSessionProvider: ParentComponent = (props) => {
   const [statuses, setStatuses] = createSignal<Record<string, SessionStatusInfo>>({})
   const unsubscribe = vscode.onMessage((msg: ExtensionMessage) => {
     if (msg.type !== "sessionStatus") return
-    const status: SessionStatusInfo =
-      msg.status === "retry"
-        ? { type: "retry", attempt: msg.attempt!, message: msg.message!, next: msg.next! }
-        : msg.status === "offline"
-          ? { type: "offline", message: msg.message! }
-          : { type: msg.status }
+    const status = statusInfo(msg.status, msg.attempt, msg.message, msg.next)
     setStatuses((current) => ({ ...current, [msg.sessionID]: status }))
   })
   onCleanup(unsubscribe)

@@ -310,6 +310,16 @@ it("leaves questions pending when a permission blocks the target session", async
   expect(api.questions).toHaveLength(1)
 })
 
+it("does not treat a scheduled sibling session as busy", async () => {
+  const api = backend()
+  ctx.stateManager().addSession("ses_target", wt.id)
+  ctx.stateManager().addSession("ses_other", wt.id)
+  api.statuses.ses_other = { type: "scheduled" }
+  await handleBaseUpdate({ ...api.request, sessionId: "ses_target" }, ctx, api.host)
+  expect(api.errors).toEqual([])
+  expect(api.requests.filter((item) => item.path.endsWith("/prompt_async"))).toHaveLength(1)
+})
+
 it("rejects wrong ownership, competing sessions, and pending permissions", async () => {
   const api = backend()
   ctx.stateManager().addSession("ses_local", null)

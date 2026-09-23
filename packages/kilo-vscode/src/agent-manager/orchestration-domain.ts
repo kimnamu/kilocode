@@ -165,7 +165,9 @@ async function live(input: OverviewInput, sessions: ManagedSession[]) {
       ])
       if (status.error || perms.error || qs.error) unavailable.add(dir)
       for (const [id, value] of Object.entries(status.data ?? {}) as Array<[string, SessionStatus]>) {
-        statuses.set(id, value.type)
+        // A scheduled session sleeps until its wake; the Agent Manager shows the
+        // scheduled activity from the wakeup feed, so the wire value is idle here.
+        statuses.set(id, value.type === "scheduled" ? "idle" : value.type)
       }
       for (const value of perms.data ?? []) permissions.add(value.sessionID)
       for (const value of qs.data ?? []) questions.add(value.sessionID)

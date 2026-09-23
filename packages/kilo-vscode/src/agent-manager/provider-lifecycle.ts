@@ -311,7 +311,8 @@ export async function deleteLifecycleWorktree(
     )
       throw new Error("Deletion safety checks returned no data")
     sessions.data.forEach((session) => retained.add(session.id))
-    const active = Object.values(status.data).some((value) => value.type !== "idle")
+    // A scheduled session sleeps until its wake; it is idle, not active.
+    const active = Object.values(status.data).some((value) => value.type !== "idle" && value.type !== "scheduled")
     if (active || permissions.data.length > 0 || questions.data.length > 0)
       return fail("Cannot delete a worktree while a session is active or waiting for input")
   } catch (error) {

@@ -276,6 +276,18 @@ describe("Agent Manager worktree deletion lifecycle", () => {
     expect(client.question.list).toHaveBeenCalledWith({ directory: worktree }, { throwOnError: true })
   })
 
+  it("deletes a worktree whose session is only scheduled to wake", async () => {
+    const session = state.addSession("session", state.getWorktrees()[0]!.id)
+    client.session.status.mockResolvedValue({
+      data: { [session.id]: { type: "scheduled", scheduledAt: "2026-09-24T00:00:00.000Z" } },
+    })
+
+    await deleteWorktree()
+
+    expect(calls).not.toContain("post:error")
+    expect(state.getWorktree(session.worktreeId!)).toBeUndefined()
+  })
+
   it.each(["permission", "question"] as const)("refuses a pending %s before cleanup", async (kind) => {
     const session = state.addSession("session", state.getWorktrees()[0]!.id)
     const list = kind === "permission" ? client.permission.list : client.question.list

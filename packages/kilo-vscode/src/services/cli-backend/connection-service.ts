@@ -1058,7 +1058,11 @@ export class KiloConnectionService {
     }
     if (
       event.type === "session.turn.open" ||
-      (event.type === "session.status" && event.properties.status.type !== "idle") ||
+      // A scheduled session sleeps until its wake: it is a finished turn, not new turn
+      // activity, so it must not supersede a pending completion.
+      (event.type === "session.status" &&
+        event.properties.status.type !== "idle" &&
+        event.properties.status.type !== "scheduled") ||
       event.type === "session.error" ||
       event.type === "session.deleted" ||
       (event.type === "sync" && event.name === "session.deleted.1")

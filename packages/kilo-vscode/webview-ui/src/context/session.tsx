@@ -105,7 +105,7 @@ import { createDraftAgentSeed, resolvePromptAgent } from "./session-agent"
 import { createModelSelector } from "./session-model-selector"
 import { createModelPreferences } from "./session-model-preferences"
 import { createPreferenceLoader } from "./session-preference-loader"
-import { activities, blockedSessionIds, type Activity } from "../utils/session-activity"
+import { activities, blockedSessionIds, statusInfo as toStatusInfo, type Activity } from "../utils/session-activity"
 import { hold, type Timing } from "./session-timing"
 import type { SessionContextValue } from "./session-types"
 
@@ -1552,19 +1552,17 @@ export const SessionProvider: ParentComponent = (props) => {
     next?: number,
   ) {
     if (removedSessions.has(sessionID)) return
-    const shouldAbort = aborts.update(sessionID, newStatus)
+    // `statusInfo` folds a scheduled wire status into idle: the wakeup feed drives
+    // the scheduled badge, so a sleeping session must not read as a running turn.
+    const info = toStatusInfo(newStatus, attempt, message, next)
+    const state = info.type
+    const shouldAbort = aborts.update(sessionID, state)
     confirmSubmissions(sessionID)
     const prev = statusMap[sessionID]?.type ?? "idle"
-    const info: SessionStatusInfo =
-      newStatus === "retry"
-        ? { type: "retry", attempt: attempt ?? 0, message: message ?? "", next: next ?? 0 }
-        : newStatus === "offline"
-          ? { type: "offline", message: message ?? "" }
-          : { type: newStatus }
     setStatusMap(sessionID, info)
-    if (newStatus === "busy" || newStatus === "retry") clearClose(sessionID)
-    if (prev === "idle" && newStatus !== "idle") startTiming(sessionID)
-    if (newStatus === "idle") {
+    if (state === "busy" || state === "retry") clearClose(sessionID)
+    if (prev === "idle" && state !== "idle") startTiming(sessionID)
+    if (state === "idle") {
       setTimingMap(
         produce((map) => {
           delete map[sessionID]

@@ -23,7 +23,8 @@ export async function handleForkSession(ctx: ForkContext, sessionId: string, mes
         console.error("[Kilo New] refreshForkStatus failed:", e)
         return "busy" as SessionStatus["type"]
       }))
-  if (status !== "idle") {
+  // A scheduled session sleeps until its wake; it is idle, not running a turn.
+  if (status !== "idle" && status !== "scheduled") {
     ctx.post({ type: "error", message: "Wait for the session to finish before forking it." })
     return
   }

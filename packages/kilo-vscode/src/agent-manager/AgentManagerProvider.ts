@@ -353,7 +353,8 @@ export class AgentManagerProvider implements Disposable {
     const sid = props?.sessionID
     const type = props?.status?.type
     if (!sid || !type || this.removedSessions.has(sid)) return
-    if (type === "idle") {
+    // A scheduled session sleeps until its wake; it is idle, not running a turn.
+    if (type === "idle" || type === "scheduled") {
       this.busySessions.delete(sid)
       this.naming.idle(sid)
       return

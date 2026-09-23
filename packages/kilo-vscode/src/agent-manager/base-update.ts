@@ -56,8 +56,12 @@ export async function handleBaseUpdate(
       const selected = msg.sessionId ? state.getSession(msg.sessionId) : undefined
       if (msg.sessionId && selected?.worktreeId !== worktree.id)
         throw new Error("The target session changed worktrees.")
+      // A scheduled session sleeps until its wake; it is idle, not busy.
       const busy = sessions
-        .filter((session) => (statuses.data[session.id]?.type ?? "idle") !== "idle")
+        .filter((session) => {
+          const type = statuses.data[session.id]?.type ?? "idle"
+          return type !== "idle" && type !== "scheduled"
+        })
         .map((session) => session.id)
       const id = selected?.id ?? sessions.find((session) => busy.includes(session.id))?.id ?? sessions.at(0)?.id
       if (busy.some((item) => item !== id))

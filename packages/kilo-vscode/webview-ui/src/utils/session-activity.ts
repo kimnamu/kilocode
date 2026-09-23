@@ -1,6 +1,18 @@
+import type { SessionStatusInfo } from "../types/messages"
+
 export type Activity = "waiting" | "error" | "retry" | "busy" | "done" | "scheduled" | "idle"
 
-export type Status = "idle" | "busy" | "retry" | "offline"
+export type Status = "idle" | "busy" | "retry" | "offline" | "scheduled"
+
+// The wire can report `scheduled` while no turn runs. A sleeping session is idle
+// for the webview: the wakeup feed supplies the scheduled badge, so the status
+// must not read as a running turn.
+export function statusInfo(status: Status, attempt?: number, message?: string, next?: number): SessionStatusInfo {
+  if (status === "scheduled") return { type: "idle" }
+  if (status === "retry") return { type: "retry", attempt: attempt ?? 0, message: message ?? "", next: next ?? 0 }
+  if (status === "offline") return { type: "offline", message: message ?? "" }
+  return { type: status }
+}
 
 export interface ActivityInput {
   status?: Status

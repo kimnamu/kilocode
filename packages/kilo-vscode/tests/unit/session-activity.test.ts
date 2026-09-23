@@ -6,6 +6,7 @@ import {
   label,
   running,
   score,
+  statusInfo,
   strongest,
   type Activity,
 } from "../../webview-ui/src/utils/session-activity"
@@ -261,5 +262,28 @@ describe("label", () => {
       "session.tabs.switcher.scheduled",
       "session.current",
     ])
+  })
+})
+
+describe("statusInfo", () => {
+  it("treats a scheduled status as idle for the webview", () => {
+    expect(statusInfo("scheduled")).toEqual({ type: "idle" })
+  })
+
+  it("keeps the existing retry, offline, busy and idle shapes", () => {
+    expect(statusInfo("idle")).toEqual({ type: "idle" })
+    expect(statusInfo("busy")).toEqual({ type: "busy" })
+    expect(statusInfo("retry", 2, "Rate limited", 1234)).toEqual({
+      type: "retry",
+      attempt: 2,
+      message: "Rate limited",
+      next: 1234,
+    })
+    expect(statusInfo("retry")).toEqual({ type: "retry", attempt: 0, message: "", next: 0 })
+    expect(statusInfo("offline", undefined, "Connection lost")).toEqual({
+      type: "offline",
+      message: "Connection lost",
+    })
+    expect(statusInfo("offline")).toEqual({ type: "offline", message: "" })
   })
 })

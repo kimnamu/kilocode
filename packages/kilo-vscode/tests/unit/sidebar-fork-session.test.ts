@@ -43,4 +43,14 @@ describe("sidebar fork session", () => {
     expect(forked).not.toHaveBeenCalled()
     expect(post).toHaveBeenCalledWith({ type: "error", message: "Wait for the session to finish before forking it." })
   })
+
+  it("forks a scheduled source because it is not running a turn", async () => {
+    const forked = mock(() => undefined)
+    const post = mock(() => undefined)
+
+    await handleForkSession(ctx({ forked, post, status: () => "scheduled" }), "source")
+
+    expect(post).not.toHaveBeenCalled()
+    expect(forked).toHaveBeenCalledWith(session, "source")
+  })
 })

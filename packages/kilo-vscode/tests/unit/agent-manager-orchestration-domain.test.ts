@@ -176,6 +176,32 @@ describe("Agent Manager orchestration domain", () => {
     expect(dirs.size).toBe(4)
   })
 
+  it("treats a scheduled wire status as idle so the wakeup feed drives the badge", async () => {
+    const managed = state.addWorktree({ branch: "fix/sleep", path: worktree, parentBranch: "main" })
+    state.addSession("ses_sleep", managed.id)
+    const client = {
+      session: {
+        get: mock(async (input: { sessionID: string; directory?: string }) => ({
+          data: { id: input.sessionID, directory: input.directory, title: "Sleeping" } as Session,
+        })),
+        status: mock(async () => ({
+          data: { ses_sleep: { type: "scheduled", scheduledAt: "2026-09-24T00:00:00.000Z" } },
+        })),
+      },
+      permission: { list: mock(async () => ({ data: [] })) },
+      question: { list: mock(async () => ({ data: noQuestions })) },
+    } as unknown as KiloClient
+
+    const result = await overview({ client, root, state, titles: new Map(), stats: { worktrees: [] }, prs: new Map() })
+
+    expect(result.ungrouped).toEqual([
+      expect.objectContaining({
+        id: managed.id,
+        session: expect.objectContaining({ id: "ses_sleep", activity: "idle" }),
+      }),
+    ])
+  })
+
   it("delivers to a managed session in its authoritative directory", async () => {
     const managed = state.addWorktree({ branch: "fix/prompt", path: worktree, parentBranch: "main" })
     state.addSession("ses_target", managed.id)
