@@ -163,7 +163,8 @@ export const kilocodeHandlers = HttpApiBuilder.group(InstanceHttpApi, "kilocode"
       const blocked = new InvalidRequestError({ message: "This session cannot be resumed in its current state." })
       if (session.revert || session.time.archived) return yield* blocked
       yield* runState.assertNotBusy(id).pipe(Effect.mapError(() => blocked))
-      if ((yield* status.get(id)).type !== "idle") return yield* blocked
+      const current = yield* status.get(id)
+      if (current.type !== "idle" && current.type !== "scheduled") return yield* blocked
       const pending = [
         ...(yield* permission.list()),
         ...(yield* question.list()),

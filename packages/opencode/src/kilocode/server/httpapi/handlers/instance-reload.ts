@@ -10,7 +10,7 @@ import type { SessionID } from "@/session/schema"
 
 export function hasActiveSession(statuses: Map<SessionID, SessionStatus.Info>): boolean {
   for (const info of statuses.values()) {
-    if (info.type !== "idle") return true
+    if (info.type !== "idle" && info.type !== "scheduled") return true
   }
   return false
 }

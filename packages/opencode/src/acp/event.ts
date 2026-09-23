@@ -109,7 +109,11 @@ export class Subscription {
   async handle(event: Event) {
     switch (event.type) {
       case "session.status":
-        if (event.properties.status.type === "idle") this.idle(event.properties.sessionID)
+        // kilocode_change start - a pending wake ends the turn like idle does
+        if (event.properties.status.type === "idle" || event.properties.status.type === "scheduled") {
+          this.idle(event.properties.sessionID)
+        }
+        // kilocode_change end
         return
       case "permission.asked":
         this.permission.handle(event)

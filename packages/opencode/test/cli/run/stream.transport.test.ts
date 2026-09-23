@@ -69,6 +69,20 @@ function idle(sessionID = "session-1") {
   } satisfies SdkEvent
 }
 
+function scheduled(sessionID = "session-1") {
+  return {
+    id: `evt-${sessionID}-scheduled`,
+    type: "session.status",
+    properties: {
+      sessionID,
+      status: {
+        type: "scheduled",
+        scheduledAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+  } satisfies SdkEvent
+}
+
 function retry(sessionID: string, attempt: number, message: string) {
   return {
     id: `evt-${sessionID}-retry-${attempt}`,
@@ -185,6 +199,10 @@ function statusMap(busy: boolean): SessionStatusMap {
   }
 
   return {}
+}
+
+function scheduledStatusMap(): SessionStatusMap {
+  return { "session-1": { type: "scheduled", scheduledAt: "2026-01-01T00:00:00.000Z" } }
 }
 
 function assistantMessage(input: { sessionID: string; id: string; parts: SessionMessage["parts"] }): SessionMessage {
@@ -2131,6 +2149,83 @@ describe("run stream transport", () => {
           includeFiles: false,
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("turn timed out")), 1_000)),
+      ])
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
+  test("completes the turn when the session status event reports a scheduled wake", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: sdk({
+        stream: src.stream,
+        promptAsync: async () => {
+          queueMicrotask(() => {
+            src.push(busy())
+            src.push(scheduled())
+          })
+          return ok(undefined)
+        },
+        status: async () => ok(scheduledStatusMap()),
+      }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+    })
+
+    try {
+      await Promise.race([
+        transport.runPromptTurn({
+          agent: undefined,
+          model: undefined,
+          variant: undefined,
+          prompt: { text: "hello", parts: [] },
+          files: [],
+          includeFiles: false,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("turn timed out")), 1_000)),
+      ])
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
+  test("treats a scheduled session as idle when the status event is missed", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: sdk({
+        stream: src.stream,
+        promptAsync: async () => {
+          queueMicrotask(() => {
+            src.push(assistant("msg-1"))
+          })
+          return ok(undefined)
+        },
+        status: async () => ok(scheduledStatusMap()),
+      }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+    })
+
+    try {
+      await Promise.race([
+        transport.runPromptTurn({
+          agent: undefined,
+          model: undefined,
+          variant: undefined,
+          prompt: { text: "hello", parts: [] },
+          files: [],
+          includeFiles: false,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("turn timed out")), 2_000)),
       ])
     } finally {
       src.close()

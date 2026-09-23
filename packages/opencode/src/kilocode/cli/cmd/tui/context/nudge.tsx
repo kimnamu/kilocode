@@ -83,7 +83,8 @@ export const { use: useNudge, provider: NudgeProvider } = createSimpleContext({
     event.subscribe((e) => {
       if (e.type !== "session.status") return
       const sid = e.properties.sessionID
-      if (e.properties.status.type === "idle") {
+      // a scheduled wake is also a turn end: drop the running marker so the next real turn re-arms
+      if (e.properties.status.type === "idle" || e.properties.status.type === "scheduled") {
         running.delete(sid)
         return
       }

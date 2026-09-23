@@ -366,6 +366,60 @@ describe("acp event routing", () => {
   })
   // kilocode_change end
 
+  // kilocode_change start - a scheduled turn end releases the idle waiter
+  it("settles the idle waiter when the turn ends scheduled", async () => {
+    const harness = createHarness()
+    const called = Promise.withResolvers<void>()
+    const response = Promise.withResolvers<{ data: { info: { id: string } } }>()
+    const state = { done: false }
+    const message = {
+      id: "evt_current",
+      type: "message.updated",
+      properties: { sessionID: "ses_a", info: { id: "msg_current" } },
+    } as Event
+    const scheduled = {
+      id: "evt_scheduled",
+      type: "session.status",
+      properties: {
+        sessionID: "ses_a",
+        status: { type: "scheduled", scheduledAt: "2026-01-01T00:00:00.000Z" },
+      },
+    } as Event
+
+    harness.subscription.start()
+    try {
+      await pollUntil(() => harness.calls.eventSubscribe === 1, "event stream did not connect")
+      await Bun.sleep(0)
+      const result = harness.subscription
+        .runUntilIdle("ses_a", () => {
+          called.resolve()
+          return response.promise
+        })
+        .then(() => {
+          state.done = true
+        })
+
+      await called.promise
+      response.resolve({ data: { info: { id: "msg_current" } } })
+      await Bun.sleep(0)
+      await harness.subscription.handle(message)
+      await Bun.sleep(0)
+      expect(state.done).toBe(false)
+
+      await harness.subscription.handle(scheduled)
+      await Promise.race([
+        result,
+        Bun.sleep(250).then(() => {
+          throw new Error("idle waiter did not settle on a scheduled status")
+        }),
+      ])
+      expect(state.done).toBe(true)
+    } finally {
+      harness.subscription.stop()
+    }
+  })
+  // kilocode_change end
+
   it("routes message.part.delta by sessionID without cross-session pollution", async () => {
     const harness = createHarness()
     await createKnownSession(harness.session, "ses_a", { messageId: "msg_a", partId: "part_a", partType: "text" })

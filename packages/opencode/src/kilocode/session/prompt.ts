@@ -209,7 +209,7 @@ export namespace KiloSessionPrompt {
     sessions: Pick<Session.Interface, "messages" | "removeMessage">
   }) {
     const state = yield* input.status.get(input.sessionID)
-    if (state.type !== "idle") return
+    if (state.type !== "idle" && state.type !== "scheduled") return
 
     const msgs = yield* input.sessions.messages({ sessionID: input.sessionID, limit: 2 })
     const tail = msgs.at(-1)
@@ -230,7 +230,7 @@ export namespace KiloSessionPrompt {
       sessions: Pick<Session.Interface, "messages" | "removeMessage">
     }) {
       const state = yield* input.status.get(input.sessionID)
-      if (state.type !== "idle") return
+      if (state.type !== "idle" && state.type !== "scheduled") return
 
       const msgs = yield* input.sessions.messages({ sessionID: input.sessionID, limit: 2 })
       const tail = msgs.at(-1)
@@ -264,7 +264,7 @@ export namespace KiloSessionPrompt {
     sessions: Pick<Session.Interface, "messages" | "removeMessage">
   }) {
     const state = yield* input.status.get(input.sessionID)
-    if (state.type !== "idle") return
+    if (state.type !== "idle" && state.type !== "scheduled") return
 
     const msgs = yield* input.sessions.messages({ sessionID: input.sessionID, limit: 2 })
     const tail = msgs.at(-1)

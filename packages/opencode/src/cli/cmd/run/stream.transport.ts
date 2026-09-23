@@ -221,7 +221,9 @@ function active(event: Event, sessionID: string): boolean {
     return true
   }
 
-  return event.properties.status.type !== "idle"
+  // kilocode_change start - a scheduled session is asleep, so it produces no output
+  return event.properties.status.type !== "idle" && event.properties.status.type !== "scheduled"
+  // kilocode_change end
 }
 
 // Races the turn's deferred completion against an abort signal.
@@ -801,7 +803,9 @@ function createLayer(input: StreamInput) {
           Effect.promise(() => input.sdk.session.status()).pipe(
             Effect.map((out) => {
               const item = out.data?.[input.sessionID]
-              return !item || item.type === "idle"
+              // kilocode_change start - a scheduled session has no turn in flight
+              return !item || item.type === "idle" || item.type === "scheduled"
+              // kilocode_change end
             }),
             Effect.orElseSucceed(() => fallback),
           ),
@@ -849,7 +853,9 @@ function createLayer(input: StreamInput) {
           if (
             event.type !== "session.status" ||
             event.properties.sessionID !== input.sessionID ||
-            event.properties.status.type !== "idle"
+            // kilocode_change start - a scheduled session finishes the turn too
+            (event.properties.status.type !== "idle" && event.properties.status.type !== "scheduled")
+            // kilocode_change end
           ) {
             return
           }
